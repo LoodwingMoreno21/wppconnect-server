@@ -114,47 +114,223 @@ export function groupNameToArray(group: any) {
   return localArr;
 }
 
+function sanitizeWebhookPayload(data: any): Record<string, unknown> {
+  if (data == null || typeof data !== 'object') {
+    return { value: data };
+  }
+
+  const payload: Record<string, unknown> = {};
+  const safeKeys = [
+    'id',
+    'body',
+    'caption',
+    'content',
+    'from',
+    'to',
+    'author',
+    'fromMe',
+    'isGroupMsg',
+    'type',
+    't',
+    'timestamp',
+    'ack',
+    'isMedia',
+    'isMMS',
+    'mimetype',
+    'notifyName',
+    'quotedMsgId',
+    'mentionedIds',
+    'broadcast',
+    'isForwarded',
+  ];
+
+  for (const key of safeKeys) {
+    if (data[key] !== undefined && data[key] !== null) {
+      payload[key] = data[key];
+    }
+  }
+
+  if (data.sender && typeof data.sender === 'object') {
+    payload.sender = {
+      id: data.sender.id?._serialized ?? data.sender.id ?? null,
+      pushname: data.sender.pushname ?? data.sender.name ?? null,
+      name: data.sender.name ?? null,
+      formattedName: data.sender.formattedName ?? null,
+      isMyContact: data.sender.isMyContact ?? false,
+    };
+  }
+
+  if (data.chatId && typeof data.chatId === 'object') {
+    payload.chatId =
+      data.chatId._serialized ?? data.chatId.user ?? String(data.chatId);
+  } else if (typeof data.chatId === 'string') {
+    payload.chatId = data.chatId;
+  }
+
+  return payload;
+}
+
+function resolveWebhookUrl(client: any, req: Request): string | false {
+  const sessionWebhook = client?.config?.webhook;
+  if (typeof sessionWebhook === 'string' && sessionWebhook.trim()) {
+    return sessionWebhook.trim();
+  }
+  const defaultUrl = req.serverOptions?.webhook?.url;
+  if (typeof defaultUrl === 'string' && defaultUrl.trim()) {
+    return defaultUrl.trim();
+  }
+  return false;
+}
+
+function isMapperEnabled(req: Request): boolean {
+  return Boolean(
+    req.serverOptions?.webhook?.mapper?.enable ??
+      req.serverOptions?.mapper?.enable
+  );
+}
+
+function isArchiveEnabled(req: Request): boolean {
+  return Boolean(
+    req.serverOptions?.webhook?.archive?.enable ??
+      req.serverOptions?.archive?.enable
+  );
+}
+
+async function applyMapperIfEnabled(
+  req: Request,
+  payload: any,
+  event: string
+): Promise<any> {
+  if (!isMapperEnabled(req)) {
+    console.log('[WEBHOOK] mapper desactivado — payload sin transformar');
+    return payload;
+  }
+
+  // onmessage debe llegar con body/from intactos para FastAPI
+  if (event === 'onmessage') {
+    console.log(
+      '[WEBHOOK] mapper activo pero onmessage se envía sin transformar (FastAPI usa body/from)'
+    );
+    return payload;
+  }
+
+  const prefix =
+    req.serverOptions?.webhook?.mapper?.prefix ??
+    req.serverOptions?.mapper?.prefix ??
+    'tagone-';
+
+  try {
+    const mapped = await convert(prefix, payload);
+    console.log(
+      `[WEBHOOK] mapper activo — payload transformado (event=${event})`
+    );
+    return mapped;
+  } catch (error) {
+    console.warn(
+      '[WEBHOOK] mapper falló, se envía payload original:',
+      error instanceof Error ? error.message : error
+    );
+    return payload;
+  }
+}
+
 export async function callWebHook(
   client: any,
   req: Request,
   event: any,
   data: any
 ) {
-  const webhook =
-    client?.config.webhook || req.serverOptions.webhook.url || false;
-  if (webhook) {
-    if (
-      req.serverOptions.webhook?.ignore &&
-      (req.serverOptions.webhook.ignore.includes(event) ||
-        req.serverOptions.webhook.ignore.includes(data?.from) ||
-        req.serverOptions.webhook.ignore.includes(data?.type))
-    )
-      return;
-    if (req.serverOptions.webhook.autoDownload)
-      await autoDownload(client, req, data);
+  if (!req || !req.serverOptions) {
+    console.warn('[WEBHOOK] Abortado: req o serverOptions no definidos');
+    return;
+  }
+
+  const webhook = resolveWebhookUrl(client, req);
+
+  console.log(
+    `[WEBHOOK] Disparando event="${event}" → ${webhook || 'SIN URL'} | from="${
+      data?.from ?? 'n/a'
+    }"`
+  );
+
+  if (!webhook) {
+    console.warn('[WEBHOOK] Abortado: no hay URL (config.ts ni sesión)');
+    return;
+  }
+
+  const ignoreList = req.serverOptions?.webhook?.ignore ?? [];
+  if (
+    ignoreList.includes(event) ||
+    ignoreList.includes(data?.from) ||
+    ignoreList.includes(data?.type)
+  ) {
+    console.log(`[WEBHOOK] Ignorado por ignore[]: event="${event}"`);
+    return;
+  }
+
+  if (req.serverOptions?.webhook?.autoDownload) {
     try {
-      const chatId =
-        data.from ||
-        data.chatId ||
-        (data.chatId ? data.chatId._serialized : null);
-      data = Object.assign({ event: event, session: client.session }, data);
-      if (req.serverOptions.mapper.enable)
-        data = await convert(req.serverOptions.mapper.prefix, data);
-      api
-        .post(webhook, data)
-        .then(() => {
-          try {
-            const events = ['unreadmessages', 'onmessage'];
-            if (events.includes(event) && req.serverOptions.webhook.readMessage)
-              client.sendSeen(chatId);
-          } catch (e) {}
-        })
-        .catch((e) => {
-          req.logger.warn('Error calling Webhook.', e);
-        });
-    } catch (e) {
-      req.logger.error(e);
+      await autoDownload(client, req, data);
+    } catch (error) {
+      console.warn(
+        '[WEBHOOK] autoDownload falló, continuando POST:',
+        error instanceof Error ? error.message : error
+      );
     }
+  }
+
+  try {
+    const chatId =
+      data?.from ||
+      data?.chatId ||
+      (data?.chatId ? data.chatId._serialized : null);
+
+    let payload: Record<string, unknown> = Object.assign(
+      { event, session: client?.session ?? 'unknown' },
+      sanitizeWebhookPayload(data)
+    );
+
+    payload = await applyMapperIfEnabled(req, payload, event);
+
+    console.log(
+      `[WEBHOOK] POST enviando → ${webhook} | body="${String(
+        payload.body ?? ''
+      ).slice(0, 60)}"`
+    );
+
+    const response = await api.post(webhook, payload, {
+      timeout: 15000,
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    console.log(
+      `[WEBHOOK] ✓ POST OK status=${response.status} event="${event}"`
+    );
+
+    try {
+      const events = ['unreadmessages', 'onmessage'];
+      if (
+        events.includes(event) &&
+        req.serverOptions?.webhook?.readMessage &&
+        client?.sendSeen
+      ) {
+        await client.sendSeen(chatId);
+      }
+    } catch (seenError) {
+      console.warn(
+        '[WEBHOOK] sendSeen falló (no bloquea webhook):',
+        seenError instanceof Error ? seenError.message : seenError
+      );
+    }
+  } catch (error: any) {
+    console.error(`[WEBHOOK] ✗ POST FAIL event="${event}"`);
+    console.error(
+      '[WEBHOOK] ✗',
+      error?.message ?? error,
+      '| httpStatus=',
+      error?.response?.status ?? 'sin respuesta'
+    );
+    req.logger?.warn?.('Error calling Webhook.', error);
   }
 }
 
@@ -248,9 +424,13 @@ export async function startAllSessions(config: any, logger: any) {
 }
 
 export async function startHelper(client: any, req: any) {
-  if (req.serverOptions.webhook.allUnreadOnStart) await sendUnread(client, req);
+  if (req?.serverOptions?.webhook?.allUnreadOnStart) {
+    await sendUnread(client, req);
+  }
 
-  if (req.serverOptions.archive.enable) await archive(client, req);
+  if (isArchiveEnabled(req)) {
+    await archive(client, req);
+  }
 }
 
 async function sendUnread(client: any, req: any) {

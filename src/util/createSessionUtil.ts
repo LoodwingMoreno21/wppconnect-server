@@ -1,23 +1,7 @@
-/*
- * Copyright 2021 WPPConnect Team
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
 import { create, SocketState, StatusFind } from '@wppconnect-team/wppconnect';
-import { Request } from 'express';
+import { EventEmitter } from 'events';
 
 import { download } from '../controller/sessionController';
-import { WhatsAppServer } from '../types/WhatsAppServer';
 import chatWootClient from './chatWootClient';
 import { autoDownload, callWebHook, startHelper } from './functions';
 import { clientsArray, eventEmitter } from './sessionUtil';
@@ -43,7 +27,7 @@ export default class CreateSessionUtil {
       let client = this.getClient(session) as any;
       if (client.status != null && client.status !== 'CLOSED') return;
       client.status = 'INITIALIZING';
-      client.config = req.body;
+      client.config = req.body || {};
 
       const tokenStore = new Factory();
       const myTokenStore = tokenStore.createTokenStory(client);
@@ -76,15 +60,25 @@ export default class CreateSessionUtil {
           req.serverOptions.createOptions,
           {
             session: session,
+            headless: false,
+            useChrome: true, // <-- 1. OBLIGA AL BOT A USAR TU CHROME REAL
+            browserArgs: [
+              // <-- 2. MATA EL PROXY DENTRO DEL NAVEGADOR
+              '--no-sandbox',
+              '--disable-setuid-sandbox',
+              '--proxy-server="direct://"',
+              '--proxy-bypass-list=*',
+            ],
             phoneNumber: client.config.phone ?? null,
+            // ... (EL RESTO DEL CÓDIGO SIGUE IGUAL HACIA ABAJO)
             deviceName:
-              client.config.phone == undefined // bug when using phone code this shouldn't be passed (https://github.com/wppconnect-team/wppconnect-server/issues/1687#issuecomment-2099357874)
+              client.config.phone == undefined
                 ? client.config?.deviceName ||
                   req.serverOptions.deviceName ||
                   'WppConnect'
                 : undefined,
             poweredBy:
-              client.config.phone == undefined // bug when using phone code this shouldn't be passed (https://github.com/wppconnect-team/wppconnect-server/issues/1687#issuecomment-2099357874)
+              client.config.phone == undefined
                 ? client.config?.poweredBy ||
                   req.serverOptions.poweredBy ||
                   'WPPConnect-Server'
@@ -160,7 +154,8 @@ export default class CreateSessionUtil {
     }
   }
 
-  async opendata(req: Request, session: string, res?: any) {
+  // --- FUNCIÓN RESTAURADA ---
+  async opendata(req: any, session: string, res?: any) {
     await this.createSessionUtil(req, clientsArray, session, res);
   }
 
@@ -168,7 +163,7 @@ export default class CreateSessionUtil {
     req: any,
     phone: any,
     phoneCode: any,
-    client: WhatsAppServer,
+    client: any,
     res?: any
   ) {
     eventEmitter.emit(`phoneCode-${client.session}`, phoneCode, client);
@@ -200,13 +195,7 @@ export default class CreateSessionUtil {
       });
   }
 
-  exportQR(
-    req: any,
-    qrCode: any,
-    urlCode: any,
-    client: WhatsAppServer,
-    res?: any
-  ) {
+  exportQR(req: any, qrCode: any, urlCode: any, client: any, res?: any) {
     eventEmitter.emit(`qrcode-${client.session}`, qrCode, urlCode, client);
     Object.assign(client, {
       status: 'QRCODE',
@@ -243,7 +232,7 @@ export default class CreateSessionUtil {
     });
   }
 
-  async start(req: Request, client: WhatsAppServer) {
+  async start(req: any, client: any) {
     try {
       await client.isConnected();
       Object.assign(client, { status: 'CONNECTED', qrcode: null });
@@ -269,8 +258,8 @@ export default class CreateSessionUtil {
     }
   }
 
-  async checkStateSession(client: WhatsAppServer, req: Request) {
-    await client.onStateChange((state) => {
+  async checkStateSession(client: any, req: any) {
+    await client.onStateChange((state: any) => {
       req.logger.info(`State Change ${state}: ${client.session}`);
       const conflits = [SocketState.CONFLICT];
 
@@ -280,15 +269,32 @@ export default class CreateSessionUtil {
     });
   }
 
-  async listenMessages(client: WhatsAppServer, req: Request) {
+  async listenMessages(client: any, req: any) {
     await client.onMessage(async (message: any) => {
+      console.log(
+        `📨 [WPPConnect] Mensaje recibido | from=${message?.from} | type=${
+          message?.type
+        } | body="${String(message?.body ?? '').slice(0, 50)}"`
+      );
+
       eventEmitter.emit(`mensagem-${client.session}`, client, message);
-      callWebHook(client, req, 'onmessage', message);
-      if (message.type === 'location')
-        client.onLiveLocation(message.sender.id, (location) => {
-          callWebHook(client, req, 'location', location);
+
+      try {
+        await callWebHook(client, req, 'onmessage', message);
+      } catch (error) {
+        console.error(
+          '📨 [WPPConnect] Error al disparar webhook:',
+          error instanceof Error ? error.message : error
+        );
+      }
+
+      if (message.type === 'location') {
+        client.onLiveLocation(message.sender.id, (location: any) => {
+          callWebHook(client, req, 'location', location).catch(() => {});
         });
+      }
     });
+    // ... resto igual
 
     await client.onAnyMessage(async (message: any) => {
       message.session = client.session;
@@ -309,27 +315,27 @@ export default class CreateSessionUtil {
         callWebHook(client, req, 'onselfmessage', message);
     });
 
-    await client.onIncomingCall(async (call) => {
+    await client.onIncomingCall(async (call: any) => {
       req.io.emit('incomingcall', call);
       callWebHook(client, req, 'incomingcall', call);
     });
   }
 
-  async listenAcks(client: WhatsAppServer, req: Request) {
-    await client.onAck(async (ack) => {
+  async listenAcks(client: any, req: any) {
+    await client.onAck(async (ack: any) => {
       req.io.emit('onack', ack);
       callWebHook(client, req, 'onack', ack);
     });
   }
 
-  async onPresenceChanged(client: WhatsAppServer, req: Request) {
-    await client.onPresenceChanged(async (presenceChangedEvent) => {
+  async onPresenceChanged(client: any, req: any) {
+    await client.onPresenceChanged(async (presenceChangedEvent: any) => {
       req.io.emit('onpresencechanged', presenceChangedEvent);
       callWebHook(client, req, 'onpresencechanged', presenceChangedEvent);
     });
   }
 
-  async onReactionMessage(client: WhatsAppServer, req: Request) {
+  async onReactionMessage(client: any, req: any) {
     await client.isConnected();
     await client.onReactionMessage(async (reaction: any) => {
       req.io.emit('onreactionmessage', reaction);
@@ -337,21 +343,21 @@ export default class CreateSessionUtil {
     });
   }
 
-  async onRevokedMessage(client: WhatsAppServer, req: Request) {
+  async onRevokedMessage(client: any, req: any) {
     await client.isConnected();
     await client.onRevokedMessage(async (response: any) => {
       req.io.emit('onrevokedmessage', response);
       callWebHook(client, req, 'onrevokedmessage', response);
     });
   }
-  async onPollResponse(client: WhatsAppServer, req: Request) {
+  async onPollResponse(client: any, req: any) {
     await client.isConnected();
     await client.onPollResponse(async (response: any) => {
       req.io.emit('onpollresponse', response);
       callWebHook(client, req, 'onpollresponse', response);
     });
   }
-  async onLabelUpdated(client: WhatsAppServer, req: Request) {
+  async onLabelUpdated(client: any, req: any) {
     await client.isConnected();
     await client.onUpdateLabel(async (response: any) => {
       req.io.emit('onupdatelabel', response);
