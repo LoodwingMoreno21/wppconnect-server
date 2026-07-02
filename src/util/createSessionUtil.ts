@@ -7,6 +7,21 @@ import { autoDownload, callWebHook, startHelper } from './functions';
 import { clientsArray, eventEmitter } from './sessionUtil';
 import Factory from './tokenStore/factory';
 
+const LINUX_DOCKER_CHROME_ARGS = [
+  '--no-sandbox',
+  '--disable-setuid-sandbox',
+  '--disable-dev-shm-usage',
+];
+
+function mergeChromeArgs(...argLists: (string[] | undefined)[]): string[] {
+  return [
+    ...new Set([
+      ...LINUX_DOCKER_CHROME_ARGS,
+      ...argLists.flatMap((list) => list ?? []),
+    ]),
+  ];
+}
+
 export default class CreateSessionUtil {
   startChatWootClient(client: any) {
     if (client.config.chatWoot && !client._chatWootClient)
@@ -38,13 +53,24 @@ export default class CreateSessionUtil {
 
       this.startChatWootClient(client);
 
-      if (req.serverOptions.customUserDataDir) {
-        req.serverOptions.createOptions.puppeteerOptions = {
-          ...req.serverOptions.createOptions.puppeteerOptions,
-          userDataDir: req.serverOptions.customUserDataDir + session,
-          headless: true,
-        };
-      }
+      const browserArgs = mergeChromeArgs(
+        req.serverOptions.createOptions.browserArgs,
+        ['--disable-gpu', '--hide-scrollbars']
+      );
+
+      const puppeteerOptions = {
+        ...req.serverOptions.createOptions.puppeteerOptions,
+        headless: true,
+        args: mergeChromeArgs(
+          req.serverOptions.createOptions.puppeteerOptions?.args,
+          browserArgs
+        ),
+        ...(req.serverOptions.customUserDataDir
+          ? { userDataDir: req.serverOptions.customUserDataDir + session }
+          : {}),
+      };
+
+      req.serverOptions.createOptions.puppeteerOptions = puppeteerOptions;
 
       const wppClient = await create(
         Object.assign(
@@ -64,13 +90,8 @@ export default class CreateSessionUtil {
             session: session,
             headless: true,
             useChrome: false,
-            browserArgs: [
-              '--no-sandbox',
-              '--disable-setuid-sandbox',
-              '--disable-dev-shm-usage',
-              '--disable-gpu',
-              '--hide-scrollbars',
-            ],
+            browserArgs,
+            puppeteerOptions,
             phoneNumber: client.config.phone ?? null,
             // ... (EL RESTO DEL CÓDIGO SIGUE IGUAL HACIA ABAJO)
             deviceName:
