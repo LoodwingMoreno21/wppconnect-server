@@ -25,12 +25,21 @@ export interface ServerOptions {
     onRevokedMessage: boolean;
     onSelfMessage: boolean;
     ignore: string[];
+    mapper?: {
+      enable: boolean;
+      prefix?: string;
+    };
+    archive?: {
+      enable: boolean;
+      waitTime?: number;
+      daysToArchive?: number;
+    };
   };
   websocket: {
     autoDownload: boolean;
     uploadS3: boolean;
   };
-  archive: {
+  archive?: {
     enable: boolean;
     waitTime: number;
     daysToArchive: number;
@@ -40,7 +49,7 @@ export interface ServerOptions {
     logger: string[];
   };
   createOptions: CreateConfig;
-  mapper: {
+  mapper?: {
     enable: boolean;
     prefix: string;
   };
