@@ -415,11 +415,15 @@ export async function autoDownload(client: any, req: any, message: any) {
 
 export async function startAllSessions(config: any, logger: any) {
   try {
-    await api.post(
-      `${config.host}:${config.port}/api/${config.secretKey}/start-all`
-    );
+    const port = process.env.PORT || config.port;
+    const baseUrl =
+      process.env.INTERNAL_BASE_URL || `http://127.0.0.1:${port}`;
+    const url = `${baseUrl}/api/${config.secretKey}/start-all`;
+
+    logger.info(`Auto-iniciando sesiones: ${url}`);
+    await api.post(url, {}, { timeout: 60000 });
   } catch (e) {
-    logger.error(e);
+    logger.error('startAllSessions failed:', e);
   }
 }
 

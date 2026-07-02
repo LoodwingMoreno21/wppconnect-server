@@ -21,8 +21,17 @@ class FileTokenStore {
 
   public async decodeFunction(text: string, client: any): Promise<string[]> {
     const object = JSON.parse(text);
-    if (object.config && Object.keys(client.config).length === 0)
-      client.config = object.config;
+    if (object.config && Object.keys(client.config).length === 0) {
+      const config = { ...object.config };
+      const proxyUrl = config.proxy?.url;
+      if (
+        proxyUrl &&
+        (proxyUrl.includes('myproxy.com') || proxyUrl.includes('example.com'))
+      ) {
+        delete config.proxy;
+      }
+      client.config = config;
+    }
     if (object.webhook && Object.keys(client.config).length === 0)
       client.config.webhook = object.webhook;
     return object;

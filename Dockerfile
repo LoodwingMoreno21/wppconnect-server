@@ -39,11 +39,20 @@ RUN yarn build
 FROM build AS runtime
 WORKDIR /usr/src/wpp-server/
 
-# Install runtime dependencies (chromium and vips libraries)
+# Chromium + fonts/libs required by WhatsApp Web on Alpine
 RUN apk add --no-cache \
     chromium \
+    nss \
+    freetype \
+    harfbuzz \
+    ca-certificates \
+    ttf-freefont \
     vips \
     fftw
+
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
+ENV NODE_ENV=production
 
 EXPOSE 21465
 ENTRYPOINT ["node", "dist/server.js"]

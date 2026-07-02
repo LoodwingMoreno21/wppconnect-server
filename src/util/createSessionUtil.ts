@@ -1,5 +1,6 @@
 import { create, SocketState, StatusFind } from '@wppconnect-team/wppconnect';
 import { EventEmitter } from 'events';
+import fs from 'fs';
 
 import { download } from '../controller/sessionController';
 import chatWootClient from './chatWootClient';
@@ -22,6 +23,47 @@ function mergeChromeArgs(...argLists: (string[] | undefined)[]): string[] {
   ];
 }
 
+function resolveChromiumExecutable(): string | undefined {
+  const fromEnv = process.env.PUPPETEER_EXECUTABLE_PATH;
+  if (fromEnv && fs.existsSync(fromEnv)) return fromEnv;
+
+  const candidates = [
+    '/usr/bin/chromium-browser',
+    '/usr/bin/chromium',
+    '/usr/bin/google-chrome-stable',
+  ];
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+
+  return undefined;
+}
+
+function sanitizeSessionConfig(config: Record<string, any> = {}): Record<string, any> {
+  const clean = { ...config };
+
+  if (process.env.WPP_PROXY_URL) {
+    clean.proxy = {
+      url: process.env.WPP_PROXY_URL,
+      username: process.env.WPP_PROXY_USERNAME || '',
+      password: process.env.WPP_PROXY_PASSWORD || '',
+    };
+    return clean;
+  }
+
+  const proxyUrl = clean.proxy?.url;
+  if (
+    !proxyUrl ||
+    proxyUrl.includes('myproxy.com') ||
+    proxyUrl.includes('example.com')
+  ) {
+    delete clean.proxy;
+  }
+
+  return clean;
+}
+
 export default class CreateSessionUtil {
   startChatWootClient(client: any) {
     if (client.config.chatWoot && !client._chatWootClient)
@@ -42,7 +84,7 @@ export default class CreateSessionUtil {
       let client = this.getClient(session) as any;
       if (client.status != null && client.status !== 'CLOSED') return;
       client.status = 'INITIALIZING';
-      client.config = req.body || {};
+      client.config = sanitizeSessionConfig(req.body || {});
 
       const tokenStore = new Factory();
       const myTokenStore = tokenStore.createTokenStory(client);
@@ -53,18 +95,29 @@ export default class CreateSessionUtil {
 
       this.startChatWootClient(client);
 
+      client.config = sanitizeSessionConfig(client.config);
+
+      const chromiumExecutable = resolveChromiumExecutable();
+      if (chromiumExecutable) {
+        console.log(`[${session}] Chromium: ${chromiumExecutable}`);
+      } else {
+        console.log(`[${session}] Chromium: bundled (Puppeteer default)`);
+      }
+
       const browserArgs = mergeChromeArgs(
         req.serverOptions.createOptions.browserArgs,
-        ['--disable-gpu', '--hide-scrollbars']
+        ['--disable-gpu', '--hide-scrollbars', '--disable-software-rasterizer']
       );
 
       const puppeteerOptions = {
         ...req.serverOptions.createOptions.puppeteerOptions,
         headless: true,
+        timeout: 60000,
         args: mergeChromeArgs(
           req.serverOptions.createOptions.puppeteerOptions?.args,
           browserArgs
         ),
+        ...(chromiumExecutable ? { executablePath: chromiumExecutable } : {}),
         ...(req.serverOptions.customUserDataDir
           ? { userDataDir: req.serverOptions.customUserDataDir + session }
           : {}),
@@ -72,14 +125,18 @@ export default class CreateSessionUtil {
 
       req.serverOptions.createOptions.puppeteerOptions = puppeteerOptions;
 
+      const autoClose =
+        req.serverOptions.createOptions.autoClose ??
+        Number(process.env.WPP_AUTO_CLOSE ?? 0);
+
       const wppClient = await create(
         Object.assign(
           {},
           { tokenStore: myTokenStore },
-          client.config.proxy
+          client.config.proxy?.url
             ? {
                 proxy: {
-                  url: client.config.proxy?.url,
+                  url: client.config.proxy.url,
                   username: client.config.proxy?.username,
                   password: client.config.proxy?.password,
                 },
@@ -89,7 +146,13 @@ export default class CreateSessionUtil {
           {
             session: session,
             headless: true,
-            useChrome: false,
+            useChrome: Boolean(chromiumExecutable),
+            logQR: true,
+            autoClose,
+            deviceSyncTimeout:
+              req.serverOptions.createOptions.deviceSyncTimeout ?? 180000,
+            waitForLogin: true,
+            updatesLog: true,
             browserArgs,
             puppeteerOptions,
             phoneNumber: client.config.phone ?? null,
@@ -115,6 +178,12 @@ export default class CreateSessionUtil {
               attempt: any,
               urlCode: string
             ) => {
+              console.log(
+                `\n========== QR WhatsApp [${session}] intento ${attempt} ==========`
+              );
+              if (asciiQR) console.log(asciiQR);
+              if (urlCode) console.log(`URL QR: ${urlCode}`);
+              console.log('================================================\n');
               this.exportQR(req, base64Qr, urlCode, client, res);
             },
             onLoadingScreen: (percent: string, message: string) => {
@@ -131,6 +200,9 @@ export default class CreateSessionUtil {
                   statusFind === StatusFind.autocloseCalled ||
                   statusFind === StatusFind.disconnectedMobile
                 ) {
+                  console.warn(
+                    `[${client.session}] Sesión cerrada: ${statusFind}`
+                  );
                   client.status = 'CLOSED';
                   client.qrcode = null;
                   client.close();
@@ -170,6 +242,7 @@ export default class CreateSessionUtil {
       }
     } catch (e) {
       req.logger.error(e);
+      console.error(`[${session}] Error creando sesión:`, e);
       if (e instanceof Error && e.name == 'TimeoutError') {
         const client = this.getClient(session) as any;
         client.status = 'CLOSED';
@@ -225,6 +298,10 @@ export default class CreateSessionUtil {
       qrcode: qrCode,
       urlcode: urlCode,
     });
+
+    req.logger.info(
+      `[${client.session}] QR capturado. urlCode=${urlCode ?? 'n/a'}`
+    );
 
     qrCode = qrCode.replace('data:image/png;base64,', '');
     const imageBuffer = Buffer.from(qrCode, 'base64');
