@@ -40,7 +40,9 @@ export default class CreateSessionUtil {
 
       if (req.serverOptions.customUserDataDir) {
         req.serverOptions.createOptions.puppeteerOptions = {
+          ...req.serverOptions.createOptions.puppeteerOptions,
           userDataDir: req.serverOptions.customUserDataDir + session,
+          headless: true,
         };
       }
 
@@ -60,14 +62,14 @@ export default class CreateSessionUtil {
           req.serverOptions.createOptions,
           {
             session: session,
-            headless: false,
-            useChrome: true, // <-- 1. OBLIGA AL BOT A USAR TU CHROME REAL
+            headless: true,
+            useChrome: false,
             browserArgs: [
-              // <-- 2. MATA EL PROXY DENTRO DEL NAVEGADOR
               '--no-sandbox',
               '--disable-setuid-sandbox',
-              '--proxy-server="direct://"',
-              '--proxy-bypass-list=*',
+              '--disable-dev-shm-usage',
+              '--disable-gpu',
+              '--hide-scrollbars',
             ],
             phoneNumber: client.config.phone ?? null,
             // ... (EL RESTO DEL CÓDIGO SIGUE IGUAL HACIA ABAJO)

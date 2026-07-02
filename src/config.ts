@@ -14,11 +14,13 @@ export default {
     browserArgs: [
       '--disable-web-security',
       '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
       '--disable-gpu',
       '--hide-scrollbars',
     ],
     puppeteerOptions: {
-      headless: false,
+      headless: true,
     },
     linkPreviewApiServers: null,
   },
